@@ -8,7 +8,9 @@ So why the fork?
 
 Because the original [blob-select](https://github.com/Blobfolio/blob-select) is dependency-free, it contains a lot of code that is redundant when a framework like Vue is also present. Cutting those bits out reduces the size of the Javascript by over 50%.
 
-Hooking into the complex DOM capabilities of Vue also provide some runtime performance gains, particularly as applied to change detection and repainting.
+Leveraging Vue's advanced DOM and caching features lead to some runtime performance wins, particularly with change detection and repainting operations. Aside from faster performance, the overall memory footprint is also slightly reduced.
+
+That said, because Vue components require special markup (a `<blob-select />` tag in this case), you need to be able to control the document's `<form>` markup. If you're trying to style ugly third-party content — from Pardot, Wufoo, etc. — the original [blob-select](https://github.com/Blobfolio/blob-select) is a better choice since it works with true `<select>` elements.
 
 
 
