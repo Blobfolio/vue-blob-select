@@ -68,20 +68,21 @@ import blobSelect from './vue-blobselect.min.js';
 Vue.component(blobSelect);
 ```
 
-The `dist/` folder also includes an example stylesheet and icon for the search bar to help get you started. Of course, you can also write styles from scratch; the generated markup is pretty straight-forward. :)
-
+Aside from the script, you'll need some CSS styles. You can either plug in the default stylesheet from `dist/css/` or take a look at the source in `src/scss/` to roll your own.
 
 
 
 ### Configuration
 
-While the features and eventual markup of this fork maintain full parity with [blob-select](https://github.com/Blobfolio/blob-select), the configuration for this plugin is handled in a more Vue-appropriate way.
+While the features and eventual markup of this fork maintain full parity with [blob-select](https://github.com/Blobfolio/blob-select), the configuration for this plugin is handled in a more Vue-centric way.
+
+The general idea is to throw a `<blob-select />` element on the page, specifying any settings as attributes.
 
 ```html
 <blob-select v-model="some.model" :any-props="some.value"…></blob-select>
 ```
 
-In case it wasn't obvious, the component has bi-directional `model` support, so you can bind the `<select>` value to any Vue data you want. To treat values numerically, use `v-model.number="foo"` in combination with `value-type='number'`. Otherwise it's strings all the way down.
+The component has bi-directional `model` support, so you can bind the `<select>` value to any Vue data you want. To treat values numerically, use `v-model.number="foo"` in combination with `value-type='number'`. Otherwise it's strings all the way down.
 
 The following properties can be set on the component. To set them dynamically (to e.g. Vue data), prefix the field with a `:`, otherwise if passing a literal, just throw it in as any old attribute.
 
