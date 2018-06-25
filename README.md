@@ -68,7 +68,7 @@ import blobSelect from './vue-blobselect.min.js';
 Vue.component(blobSelect);
 ```
 
-Aside from the script, you'll need some CSS styles. You can either plug in the default stylesheet from `dist/css/` or take a look at the source in `src/scss/` to roll your own.
+Aside from the main script, you'll also need some CSS styles. You can either plug in the default stylesheet from `dist/css/` or take a look at the source in `src/scss/` to roll your own.
 
 
 
