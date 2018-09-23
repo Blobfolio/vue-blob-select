@@ -119,7 +119,9 @@
                 "nonwords": false,
                 "overrides": {
                     "new": false,
-                    "++": false
+                    "++": false,
+                    "!": true,
+                    "!!": true
                 }
             }
         ],
