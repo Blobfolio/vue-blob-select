@@ -5,7 +5,7 @@
  * of the heavy-lifting is off-loaded to Vue. For projects that already
  * depend on Vue, this is a lighter alternative.
  *
- * @version 2.1.0
+ * @version 2.2.0
  * @author Blobfolio, LLC <hello@blobfolio.com>
  * @package vue-blob-forms
  * @license WTFPL <http://www.wtfpl.net>
