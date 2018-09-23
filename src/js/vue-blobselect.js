@@ -1138,7 +1138,6 @@
 			 * @returns {string} HTML.
 			 */
 			itemsHtml: function() {
-				const selected = this.niceValue;
 				let out = '';
 
 				// Until we can v-html a <template>, we have to include
