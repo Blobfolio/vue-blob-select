@@ -866,6 +866,10 @@
 			 * @returns {int} Hash.
 			 */
 			valueHash: function() {
+				if (! this.init) {
+					return 0;
+				}
+
 				let values = Array.from(this.niceValue);
 				values.sort();
 				return _checksum(values);
@@ -1230,6 +1234,11 @@
 				else {
 					this.minItemKey = 0;
 					this.maxItemKey = 0;
+				}
+
+				// Note that we've done something. Haha.
+				if (! this.init) {
+					this.init = true;
 				}
 
 				return out;
