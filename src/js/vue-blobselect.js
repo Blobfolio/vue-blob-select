@@ -16,6 +16,74 @@
 
 /* global Vue */
 (function() {
+
+	// -----------------------------------------------------------------
+	// Utility
+	// -----------------------------------------------------------------
+
+	/**
+	 * Debounce
+	 *
+	 * @param {function} fn Callback.
+	 * @param {bool} wait Wait.
+	 * @param {bool} no_postpone Do it now.
+	 * @returns {callback} Wrapper function.
+	 */
+	const _debounce = function(fn, wait, no_postpone) {
+		let args;
+		let context;
+		let result;
+		let timeout;
+		let executed = true;
+
+		/**
+		 * Ping
+		 *
+		 * @returns {void} Nothing.
+		 */
+		function ping() {
+			result = fn.apply(context || this, args || []);
+			context = args = null;
+			executed = true;
+		}
+
+		/**
+		 * Cancel Timeout
+		 *
+		 * @returns {void} Nothing.
+		 */
+		function cancel() {
+			if (timeout) {
+				clearTimeout(timeout);
+				timeout = null;
+			}
+		}
+
+		/**
+		 * Wrapper
+		 *
+		 * @returns {void} Nothing.
+		 */
+		function wrapper() {
+			context = this;
+			args = arguments;
+			if (! no_postpone) {
+				cancel();
+				timeout = setTimeout(ping, wait);
+			}
+			else if (executed) {
+				executed = false;
+				timeout = setTimeout(ping, wait);
+			}
+		}
+
+		// Reset.
+		wrapper.cancel = cancel;
+		return wrapper;
+	};
+
+
+
 	// -----------------------------------------------------------------
 	// Component
 	// -----------------------------------------------------------------
@@ -30,6 +98,8 @@
 			return {
 				focus: 0,
 				init: false,
+				minItemKey: 0,
+				maxItemKey: 0,
 				searchValue: '',
 				state: 'closed',
 				timeout: null,
@@ -132,7 +202,7 @@
 				}
 				// Toggle if needs toggling.
 				else if (
-					!force ||
+					! force ||
 					(('open' !== force) && ('closed' !== force))
 				) {
 					force = ('closed' === this.state) ? 'open' : 'closed';
@@ -158,7 +228,7 @@
 						// Assign focus to the search field.
 						if (vue.search) {
 							const field = vue.$el.querySelector('.blobselect-item-search');
-							field.innerHTML = field.textContent.replace(/\s{1,}/g, ' ').trim();
+							field.innerHTML = vue.searchValue;
 							_cursorToEnd(field);
 						}
 
@@ -185,7 +255,7 @@
 				// For closed menus, almost any key means Open Up!
 				if ('open' !== this.state) {
 					if (
-						!keyMapped ||
+						! keyMapped ||
 						(('tab' !== keyMapped) && ('backspace' !== keyMapped))
 					) {
 						e.stopPropagation();
@@ -244,7 +314,110 @@
 						this.traverseItems('next');
 					}
 				}
+				// Searching?
+				else if (this.search && e.target.classList.contains('blobselect-item-search')) {
+					this.toggleFilter();
+				}
 			},
+
+			/**
+			 * Toggle Filter
+			 *
+			 * Redraw results to take into consideration what is being
+			 * searched.
+			 *
+			 * @returns {void} Nothing.
+			 */
+			toggleFilter: _debounce(function() {
+				if (! this.search) {
+					return;
+				}
+
+				const field = this.$el.querySelector('.blobselect-item-search');
+				if (null === field) {
+					return;
+				}
+
+				this.searchValue = field.textContent.replace(/\s{1,}/g, ' ').trim();
+				if (-1 !== this.focus) {
+					this.focus = -1;
+					this.resetFocus();
+				}
+
+				let matches = {};
+				let matchLabels = new Set();
+
+				// Do a first pass to build a list of matches from the
+				// raw data. This might save us DOM Mutations later.
+				if (this.searchValue) {
+					const items = this.niceItems;
+					const itemsLength = items.length;
+					const needle = RegExp(_sanitizeRegExp(this.searchValue), 'i');
+					const replaceNeedle = RegExp(_sanitizeRegExp(this.searchValue), 'gi');
+
+					for (let i = 0; i < itemsLength; ++i) {
+						if (needle.test(items[i].label)) {
+							matches[items[i].label] = {
+								label: items[i].label,
+								richLabel: _escAttr(items[i].label).replace(replaceNeedle, '<mark>$&</mark>'),
+							};
+							matchLabels.add(items[i].label);
+						}
+					}
+				}
+
+				// Now loop through HTML elements and update as needed.
+				const items = this.$el.querySelectorAll('.blobselect-item');
+				const itemsLength = items.length;
+				const hasMatches = 0 < matchLabels.size;
+
+				for (let i = 0; i < itemsLength; ++i) {
+					// Reconstruct the label.
+					const label = _parseFlat(
+						JSON.parse(items[i].getAttribute('data-blob-label')) || false,
+						this.niceLabelType
+					);
+
+					// It matches!
+					if (matchLabels.has(label)) {
+						if (! items[i].classList.contains('is-match')) {
+							items[i].classList.add('is-match');
+						}
+
+						if (items[i].classList.contains('is-not-match')) {
+							items[i].classList.remove('is-not-match');
+						}
+
+						items[i].innerHTML = matches[label].richLabel;
+					}
+					// Reset the state across the board.
+					else {
+						let changed = false;
+
+						if (items[i].classList.contains('is-match')) {
+							items[i].classList.remove('is-match');
+							changed = true;
+						}
+
+						// We only want to tag it as a non-match if
+						// there are other matches.
+						if (hasMatches) {
+							if (! items[i].classList.contains('is-not-match')) {
+								items[i].classList.add('is-not-match');
+							}
+						}
+						else if (items[i].classList.contains('is-not-match')) {
+							items[i].classList.remove('is-not-match');
+						}
+
+						// We only need to override the label if we used
+						// to match.
+						if (changed) {
+							items[i].textContent = label;
+						}
+					}
+				}
+			}, 150),
 
 			/**
 			 * Traverse Items
@@ -274,15 +447,19 @@
 			 * @returns {int} Key.
 			 */
 			getItemKey: function(direction) {
+				// Can't do anything if there's no items.
+				if (! this.minItemKey && ! this.maxItemKey) {
+					return -1;
+				}
+
 				// "Current" is special. Let's check this out before
 				// fiddling with any of the other types of movements.
 				if ('current' === direction) {
-					for (let i = 0; i < this.blobItems.length; ++i) {
-						if (
-							this.blobItems[i].selected &&
-							!this.blobItems[i].disabled
-						) {
-							return i;
+					const field = this.$el.querySelector('.blobselect-item.is-selected');
+					if (null !== field) {
+						const key = parseInt(field.getAttribute('data-blob-item')) || 0;
+						if (key) {
+							return key;
 						}
 					}
 
@@ -290,69 +467,70 @@
 					return this.getItemKey('first');
 				}
 
-				let min = 0;
-				let max = this.blobItems.length - 1;
-				let change = 1;
-
-				// We can't do anything if there are no items.
-				if (0 > max) {
+				const fields = this.$el.querySelectorAll('.blobselect-item:not(.is-disabled):not(.is-not-match)');
+				const fieldsLength = fields.length;
+				if (! fieldsLength) {
 					return -1;
 				}
 
-				if ('next' === direction) {
-					min = this.focus + 1;
-					if (min > max) {
-						min = 0;
-					}
+				// Pull all the keys; we can't trust natural sorting.
+				let keys = [];
+				for (let i = 0; i < fieldsLength; ++i) {
+					let key = parseInt(fields[i].getAttribute('data-blob-item')) || 0;
+					keys.push(key);
 				}
-				else if ('back' === direction) {
-					min = this.focus - 1;
-					max = 0;
-					change = -1;
+				keys.sort(function(a, b) { return a - b; });
+				const keysLength = keys.length;
 
-					if (0 > min) {
-						return -1;
-					}
-				}
-				else if ('last' === direction) {
-					min = this.blobItems.length - 1;
-					max = 0;
-					change = -1;
+				// Figure out a target.
+				let start = 0;
+				const min = keys[0];
+				const max = keys[keysLength - 1];
+
+				// If there is just one thing, there's just one thing.
+				if (1 === keysLength) {
+					return min;
 				}
 
-				// Count up!
-				if (0 < change) {
-					for (let i = min; i <= max; ++i) {
-						if (
-							!this.blobItems[i].disabled &&
-							('blobselect-item-group' !== this.blobItems[i].class) &&
-							(-1 === this.blobItems[i].class.indexOf('is-not-match'))
-						) {
-							return i;
+				switch (direction) {
+				case 'next':
+					start = this.focus + 1;
+
+					if (start > max) {
+						return min;
+					}
+					else if (start === max) {
+						return max;
+					}
+
+					for (let i = 0; i < keysLength; ++i) {
+						if (keys[i] >= start) {
+							return keys[i];
 						}
 					}
 
-					// Try again from the beginning?
-					if ('next' === direction) {
-						return this.getItemKey('first');
+					return min;
+				case 'back':
+					start = this.focus - 1;
+
+					if (start < min) {
+						return max;
+					}
+					else if (start === min) {
+						return min;
 					}
 
-					return -1;
-				}
-
-				for (let i = min; max <= i; --i) {
-					if (
-						!this.blobItems[i].disabled &&
-						('blobselect-item-group' !== this.blobItems[i].class) &&
-						(-1 === this.blobItems[i].class.indexOf('is-not-match'))
-					) {
-						return i;
+					for (let i = keysLength - 1; 0 <= i; --i) {
+						if (keys[i] <= start) {
+							return keys[i];
+						}
 					}
-				}
 
-				// Try again from the end?
-				if (!this.search && ('back' === direction)) {
-					return this.getItemKey('last');
+					return max;
+				case 'first':
+					return min;
+				case 'last':
+					return max;
 				}
 
 				// Last resort, -1.
@@ -390,54 +568,99 @@
 				else {
 					// The search field is an extra monkey.
 					let focusKey = this.search ? (this.focus + 1) : this.focus;
-					try {
-						this.$el.querySelector('.blobselect-items').children[focusKey].focus();
-					} catch (Ex) {
-						console.warn('DOM mutations prevented focus from being transferred.');
+					const field = this.$el.querySelector('.blobselect-item[data-blob-item="' + focusKey + '"]');
+					if (null !== field) {
+						field.focus();
+					}
+					else {
+						this.focus = -1;
+						if (this.search) {
+							this.$el.querySelector('.blobselect-item-search').focus();
+						}
 					}
 				}
 			},
 
 			/**
-			 * Toggle Selection
+			 * Items Click
+			 *
+			 * There is one click even bound to the items wrapper
+			 * rather than a million bound to each item. Depending on
+			 * what was clicked this may require action.
+			 *
+			 * @param {Event} e Event.
+			 * @returns {void} Nothing.
+			 */
+			itemsClick: function(e) {
+				// If an item was clicked directly, pass it along.
+				if (e.target.classList.contains('blobselect-item')) {
+					e.preventDefault();
+					return this.toggleFieldSelection(e.target);
+				}
+
+				// It is possible something inside an item received the
+				// event.
+				let el = e.target;
+				while (el.parentNode && 'classList' in el.parentNode) {
+					el = el.parentNode;
+					if (el.classList.contains('blobselect-item')) {
+						return this.toggleFieldSelection(el);
+					}
+					// If we've reached blobselect we can stop.
+					else if (el.classList.contains('blobselect')) {
+						return;
+					}
+				}
+			},
+
+			/**
+			 * Toggle Selection by Field
+			 *
+			 * @param {DOMElement} field Field.
+			 * @returns {void} Nothing.
+			 */
+			toggleFieldSelection: function(field) {
+				if (
+					! field.classList.contains('blobselect-item') ||
+					field.classList.contains('is-disabled')
+				) {
+					return;
+				}
+
+				const value = _parseFlat(
+					JSON.parse(field.getAttribute('data-blob-value')) || false,
+					this.niceValueType
+				);
+
+				this.toggleValueSelection(value);
+			},
+
+			/**
+			 * Toggle Selection by Value
 			 *
 			 * @param {mixed} value Value.
 			 * @returns {void} Nothing.
 			 */
-			toggleSelection: function(value) {
-				value = _parseFlat(value, this.niceValueType);
-
-				let tmpValue = _clone(this.value);
+			toggleValueSelection: function(value) {
+				value = _parseFlat(value || '', this.niceValueType);
 				let changed = false;
+				let tmpValue = _clone(this.value);
 
 				// Multiple is weird.
 				if (this.multiple) {
 					let index = tmpValue.indexOf(value);
-					// Remove the value if it already selected.
+					// Remove it.
 					if (-1 !== index) {
 						tmpValue.splice(index, 1);
 						changed = true;
 					}
-					// Add it if we can.
-					else if (-1 !== this.niceValues.indexOf(value)) {
+					else if (value) {
 						tmpValue.push(value);
 						tmpValue.sort();
 						changed = true;
 					}
-
-					// We don't need placeholders selected any more.
-					if (1 < tmpValue.length) {
-						let length = tmpValue.length;
-						tmpValue = tmpValue.filter(Boolean);
-						if (length !== tmpValue.length) {
-							changed = true;
-						}
-					}
 				}
-				else if (
-					(value !== tmpValue) &&
-					(-1 !== this.niceValues.indexOf(value))
-				) {
+				else if (value !== tmpValue) {
 					tmpValue = value;
 					changed = true;
 				}
@@ -448,12 +671,15 @@
 				}
 
 				// Close if applicable.
-				if (
-					('open' === this.state) &&
-					(-1 !== this.niceValues.indexOf(value))
-				) {
-					this.toggleState('closed');
-				}
+				let vue = this;
+				Vue.nextTick(function() {
+					if (
+						('open' === vue.state) &&
+						(! value || vue.niceValue.has(value))
+					) {
+						vue.toggleState('closed');
+					}
+				});
 			},
 
 			/**
@@ -467,27 +693,12 @@
 					return;
 				}
 
-				let newValue = this.blobItems[newKey].value;
-				let tmpValue = _clone(this.value);
-				let changed = false;
-				if (this.multiple && (-1 === tmpValue.indexOf(newValue))) {
-					tmpValue.push(newValue);
-					tmpValue.sort();
-					changed = true;
-				}
-				else if (!this.multiple && (newValue !== tmpValue)) {
-					tmpValue = newValue;
-					changed = true;
+				const field = this.$el.querySelector('.blobselect-item[data-blob-item="' + newKey + '"]');
+				if (null === field) {
+					return;
 				}
 
-				if (changed) {
-					this.$emit('input', tmpValue);
-				}
-
-				// Close if applicable.
-				if ('open' === this.state) {
-					this.toggleState('closed');
-				}
+				this.toggleFieldSelection(field);
 			},
 
 			/**
@@ -496,52 +707,12 @@
 			 * @returns {void} Nothing.
 			 */
 			selectFocused: function() {
-				// If nothing is focused, select the first.
-				if (0 > this.focus || this.focus >= this.blobItems.length) {
-					this.selectFirst();
+				const field = this.$el.querySelector('.blobselect-item.is-focused');
+				if (null === field) {
 					return;
 				}
 
-				// If it is disabled, do nothing.
-				if (this.blobItems[this.focus].disabled) {
-					return;
-				}
-
-				let tmpValue = _clone(this.value);
-				let newValue = this.blobItems[this.focus].value;
-
-				let changed = false;
-				if (this.multiple && (-1 === tmpValue.indexOf(newValue))) {
-					tmpValue.push(newValue);
-					tmpValue.sort();
-					changed = true;
-				}
-				else if (!this.multiple && (newValue !== tmpValue)) {
-					tmpValue = newValue;
-					changed = true;
-				}
-
-				if (changed) {
-					this.$emit('input', tmpValue);
-				}
-
-				// Close if applicable.
-				if ('open' === this.state) {
-					this.toggleState('closed');
-				}
-			},
-
-			/**
-			 * Toggle Filter
-			 *
-			 * Run a search.
-			 *
-			 * @param {string} value Content.
-			 * @returns {void} Nothing.
-			 */
-			toggleFilter: function(value) {
-				this.searchValue = value.replace(/\s{1,}/g, ' ').trim();
-				this.resetFocus();
+				this.toggleFieldSelection(field);
 			},
 		},
 
@@ -555,7 +726,7 @@
 			niceName: function() {
 				let out = this.name;
 
-				if (!out || ('string' !== typeof out)) {
+				if (! out || ('string' !== typeof out)) {
 					out = 'blobselect';
 				}
 
@@ -574,7 +745,7 @@
 			niceId: function() {
 				let out = this.id;
 
-				if (!out || ('string' !== typeof out)) {
+				if (! out || ('string' !== typeof out)) {
 					/* eslint-disable-next-line */
 					out = this.niceName.replace(/[\[\]]/g, '');
 				}
@@ -619,114 +790,135 @@
 			},
 
 			/**
+			 * Nice Placeholder Value
+			 *
+			 * @returns {mixed} Value.
+			 */
+			nicePlaceholderValue: function() {
+				return ('string' === this.niceValueType) ? '' : 0;
+			},
+
+			/**
+			 * Nice Placeholder Value
+			 *
+			 * @returns {mixed} Value.
+			 */
+			nicePlaceholderLabel: function() {
+				return ('string' === this.niceLabelType) ? '' : 0;
+			},
+
+			/**
 			 * Nice Value
 			 *
-			 * Returns the value as an array containing correctly-cast
-			 * values.
-			 *
-			 * These values may not actually exist among the items; that
-			 * determination is handled elsewhere.
-			 *
-			 * @returns {array} Value.
+			 * @returns {set} Value.
 			 */
 			niceValue: function() {
-				let out = [];
+				let tmpValue;
+				const values = this.itemValues;
+				const valueOld = JSON.stringify(this.value);
 
-				// We only want to dive into this if we've initialized.
-				if (this.init) {
-					if (this.multiple && Array.isArray(this.value)) {
+				// Multi-selects have multiple values.
+				if (this.multiple) {
+					tmpValue = [];
+
+					if (Array.isArray(this.value)) {
 						for (let i = 0; i < this.value.length; ++i) {
 							let tmp = _parseFlat(this.value[i], this.niceValueType);
-							if (tmp && (-1 === out.indexOf(tmp))) {
-								out.push(tmp);
+							if (tmp && (-1 === tmpValue.indexOf(tmp)) && values.has(tmp)) {
+								tmpValue.push(tmp);
 							}
 						}
-						out.sort();
 					}
-					else if (!this.multiple && this.value) {
-						let tmp = _parseFlat(this.value, this.niceValueType);
-						if (tmp) {
-							out.push(tmp);
-						}
+
+					tmpValue.sort();
+				}
+				// Singles don't.
+				else {
+					tmpValue = _parseFlat(this.value, this.niceValueType);
+					if (tmpValue && ! values.has(tmpValue)) {
+						tmpValue = this.nicePlaceholderValue;
 					}
 				}
 
-				return out;
+				// Force an update if the value(s) were bad.
+				if (JSON.stringify(tmpValue) !== valueOld) {
+					this.$emit('input', tmpValue);
+				}
+
+				// Convert it to an array so the set is set.
+				if (! this.multiple) {
+					// Return an empty set if this is just placeholder.
+					if (tmpValue === this.nicePlaceholderValue) {
+						return new Set();
+					}
+
+					tmpValue = [tmpValue];
+				}
+
+				return new Set(tmpValue);
 			},
 
 			/**
-			 * Nice Values
+			 * Nice Value Hash
 			 *
-			 * All possible item values.
+			 * Flatten the value so we have something to watch.
 			 *
-			 * @returns {array} Values.
+			 * @returns {int} Hash.
 			 */
-			niceValues: function() {
-				let out = [];
-
-				for (let i = 0; i < this.niceItems.length; ++i) {
-					if (!this.niceItems[i].disabled) {
-						out.push(this.niceItems[i].value);
-					}
-				}
-
-				out.sort();
-				return out;
+			valueHash: function() {
+				let values = Array.from(this.niceValue);
+				values.sort();
+				return _checksum(values);
 			},
 
 			/**
-			 * Processed Items
+			 * Nice Items
 			 *
-			 * This function is a bastard, but basically exists to
-			 * crunch inconsistent user data into a predictable format.
-			 * More specialized computeds can reference this instead.
+			 * Build an authoritative list of items we can easily filter
+			 * any which way elsewhere.
 			 *
-			 * @returns {Array} Items.
+			 * @returns {array} Items.
 			 */
 			niceItems: function() {
-				// As we go, this is the list to be returned.
-				let out = [];
-
 				// Bad or missing.
-				if (!Array.isArray(this.items) || !this.items.length) {
-					return out;
+				if (! Array.isArray(this.items)) {
+					return [];
 				}
 
-				// Data might be tiered.
-				let groups = {};
-				let groupKeys = [];
+				const itemsLength = this.items.length;
+				let out = [];
+				let used = new Set();
 
-				// Keep track of what we find as we go along.
-				let usedValues = {};
-				let hasGrouped = false;
-				let hasUngrouped = false;
-				let hasSelected = false;
-
-				// First pass, run through the provided options.
-				for (let i = 0; i < this.items.length; ++i) {
+				for (let i = 0; i < itemsLength; ++i) {
 					let option = {
 						group: '',
-						label: ('string' === this.niceLabelType) ? '' : 0,
-						value: ('string' === this.niceValueType) ? '' : 0,
+						label: this.nicePlaceholderLabel,
+						value: this.nicePlaceholderValue,
 						disabled: this.disabled,
 						placeholder: false,
-						selected: false,
 					};
 
 					// Generally an object should be passed so as to set
 					// most of these values.
 					if ('object' === typeof this.items[i]) {
-						option.group = _parseString(this.items[i].group);
+						if (this.items[i].group) {
+							option.group = _parseString(this.items[i].group);
+						}
 						option.label = _parseFlat(this.items[i].label, this.niceLabelType);
 						option.value = _parseFlat(this.items[i].value, this.niceValueType);
 
 						// Copy value to the label.
-						if (!option.label && option.value) {
-							option.label = _parseFlat(this.items[i].value, this.labelType);
+						if (! option.label && option.value) {
+							if (this.niceLabelType !== this.niceValueType) {
+								option.label = _parseFlat(option.value, this.niceLabelType);
+							}
+							else {
+								option.label = option.value;
+							}
 						}
 
 						// Maybe disable individually?
-						if (!option.disabled && this.items[i].disabled) {
+						if (! option.disabled && this.items[i].disabled) {
 							option.disabled = true;
 						}
 					}
@@ -737,337 +929,79 @@
 
 						// Copy value to the label.
 						if (option.value) {
-							option.label = _parseFlat(this.items[i], this.labelType);
+							if (this.niceLabelType !== this.niceValueType) {
+								option.label = _parseFlat(option.value, this.niceLabelType);
+							}
+							else {
+								option.label = option.value;
+							}
 						}
 					}
 
 					// To be of use, it must be unique and of value.
-					if (!option.value || usedValues[option.value]) {
+					if (! option.value || used.has(option.value)) {
 						continue;
 					}
-					usedValues[option.value] = true;
-
-					// Mark it as selected if it is selected.
-					if (
-						!option.disabled &&
-						this.init &&
-						(!hasSelected || this.multiple) &&
-						(-1 !== this.niceValue.indexOf(option.value))
-					) {
-						option.selected = true;
-						hasSelected = true;
-					}
-
-					// We need to split grouped and ungrouped items for
-					// sorting purposes. If it's a group, add it thusly.
-					if (option.group) {
-						if ('undefined' === typeof groups[option.group]) {
-							groups[option.group] = [];
-							groupKeys.push(option.group);
-							hasGrouped = true;
-						}
-
-						groups[option.group].push(option);
-					}
-					// Otherwise add it to the ungrouped stack.
-					else {
-						hasUngrouped = true;
-						out.push(option);
-					}
+					used.add(option.value);
+					out.push(option);
 				}
 
-				// Sort our group keys real quick, if applicable.
-				if (1 < groupKeys.length && this.sortDirection) {
-					groupKeys.sort();
-					if ('DESC' === this.sortDirection) {
-						groupKeys.reverse();
-					}
+				return out;
+			},
+
+			/**
+			 * Possible Item Values
+			 *
+			 * @returns {set} Values.
+			 */
+			itemValues: function() {
+				let values = this.enabledItems.map(function(v) { return v.value; });
+				values.sort();
+				return new Set(values);
+			},
+
+			/**
+			 * Enabled Items
+			 *
+			 * @returns {array} Items.
+			 */
+			enabledItems: function() {
+				return this.niceItems.filter(function(v) { return ! v.disabled; });
+			},
+
+			/**
+			 * Grouped Items
+			 *
+			 * @returns {object|bool} Groups or false.
+			 */
+			groupedItems: function() {
+				let items = this.niceItems.filter(function(v) { return !! v.group; });
+				const itemsLength = items.length;
+				if (! itemsLength) {
+					return false;
 				}
 
-				// Now is a good time to add a placeholder if
-				// applicable.
-				if (this.placeholder && !this.required) {
-					let option = {
-						group: '',
-						label: this.labelPlaceholder,
-						value: ('string' === this.niceValueType) ? '' : 0,
-						disabled: this.disabled,
-						placeholder: true,
-						selected: false,
-					};
+				let out = {};
+				let used = new Set();
 
-					// If there are any ungrouped values, add the
-					// placeholder to that.
-					if (hasUngrouped || !hasGrouped) {
-						out.unshift(option);
+				// Loop it!
+				for (let i = 0; i < itemsLength; ++i) {
+					let group = items[i].group;
+					if (! used.has(group)) {
+						used.add(group);
+						out[group] = [];
 					}
-					else {
-						option.group = groupKeys[0];
-						groups[groupKeys[0]].unshift(option);
-					}
+
+					out[group].push(items[i]);
 				}
 
-				// If sorting, let's sort and add all at once. This adds
-				// redundant code but prevents redundant operations.
+				// Might as well sort.
 				if (this.sortDirection) {
-					// Sort ungrouped entries first.
-					if (1 < out.length) {
-						out.sort(this.sortFunction);
-					}
+					let groupKeys = Object.keys(out);
+					let groupLength = groupKeys.length;
 
-					// Now sort each group and add them to the list.
-					if (groupKeys.length) {
-						// This runs backwards because we are shifting
-						// groups to the top.
-						for (let i = groupKeys.length - 1; 0 <= i; --i) {
-							// Sort within the group first.
-							if (1 < groups[groupKeys[i]].length) {
-								groups[groupKeys[i]].sort(this.sortFunction);
-							}
-
-							// Add each group item to the top of out.
-							for (let j = groups[groupKeys[i]].length - 1; 0 <= j; --j) {
-								out.unshift(groups[groupKeys[i]][j]);
-							}
-						}
-					}
-				}
-				// If we aren't sorting, just merge them directly.
-				else if (groupKeys.length) {
-					// This runs backwards because we are shifting
-					// groups to the top.
-					for (let i = groupKeys.length - 1; 0 <= i; --i) {
-						// Add each group item to the top of out.
-						for (let j = groups[groupKeys[i]].length - 1; 0 <= j; --j) {
-							out.unshift(groups[groupKeys[i]][j]);
-						}
-					}
-				}
-
-				// If there are no items, we're basically done.
-				if (!out.length) {
-					// Quickie init.
-					if (!this.init) {
-						let tmpValue;
-
-						if (this.multiple) {
-							tmpValue = [];
-						}
-						else if ('string' === this.niceValueType) {
-							tmpValue = '';
-						}
-						else {
-							tmpValue = 0;
-						}
-
-						this.init = true;
-						this.$emit('input', tmpValue);
-					}
-
-					return out;
-				}
-
-				// We need to do a special state sync on first load
-				// because the item(s) and value(s) may not jive.
-				if (!this.init) {
-					let tmpValue = _clone(this.value);
-
-					// First, let's clean up the user-supplied value(s).
-					if (this.multiple) {
-						if (!Array.isArray(tmpValue)) {
-							tmpValue = [];
-						}
-						else {
-							let tmp = [];
-
-							// Make sure the values are of the right
-							// type, and present.
-							for (let i = 0; i < tmpValue.length; ++i) {
-								let value = _parseFlat(tmpValue[i], this.niceValueType);
-								if (
-									value &&
-									usedValues[value] &&
-									(-1 === tmp.indexOf(value))
-								) {
-									tmp.push(value);
-								}
-							}
-							tmpValue = tmp;
-						}
-					}
-					// Single values are easier.
-					else {
-						tmpValue = _parseFlat(tmpValue, this.niceValueType);
-
-						// Update selections before we return items.
-						if (!tmpValue || !usedValues[tmpValue]) {
-							tmpValue = ('string' === this.niceValueType) ? '' : 0;
-						}
-					}
-
-					// Second pass, let's select any selectable items,
-					// and void any unselectable values.
-					if (
-						(this.multiple && tmpValue.length) ||
-						(!this.multiple && tmpValue)
-					) {
-						let foundValues = [];
-						for (let i = 0; i < out.length; ++i) {
-							if (this.multiple) {
-								if (-1 !== tmpValue.indexOf(out[i].value)) {
-									// Void the value; it can't be
-									// selected.
-									if (out[i].disabled) {
-										tmpValue.splice(tmpValue.indexOf(out[i].value), 1);
-									}
-									else {
-										foundValues.push(out[i].value);
-										out[i].selected = true;
-									}
-
-									// If we have found everything,
-									// we're done!
-									if (tmpValue.length === foundValues.length) {
-										break;
-									}
-								}
-							}
-							else if (tmpValue === out[i].value) {
-								// Void the value; it can't be selected.
-								if (out[i].disabled) {
-									tmpValue = ('string' === this.niceValueType) ? '' : 0;
-								}
-								// Select the value.
-								else {
-									foundValues.push(out[i].value);
-									out[i].selected = true;
-								}
-
-								// One and done!
-								break;
-							}
-						}
-
-						// Make sure we found everything.
-						if (this.multiple) {
-							if (foundValues.length !== tmpValue.length) {
-								tmpValue = foundValues;
-								tmpValue.sort();
-							}
-						}
-						else {
-							if (tmpValue && !foundValues.length) {
-								tmpValue = ('string' === this.niceValueType) ? '' : 0;
-							}
-						}
-					}
-
-					// One final pass: select placeholder.
-					if (!tmpValue && this.placeholder && !this.required) {
-						for (let i = 0; i < out.length; ++i) {
-							if (out[i].placeholder) {
-								out[i].selected = true;
-								break;
-							}
-						}
-					}
-
-					// Finally, mark this as ready!
-					this.init = true;
-					this.$emit('input', tmpValue);
-				}
-
-				return out;
-			},
-
-			/**
-			 * Items for blobSelect
-			 *
-			 * @returns {Array} Items.
-			 */
-			blobItems: function() {
-				let out = [];
-
-				// Keep track of group labels and whatnot.
-				let lastGroup = '';
-				let tabIndex = 0;
-
-				// Filtering might apply here.
-				const doingSearch = this.search && this.searchValue;
-				const needle = doingSearch ? RegExp(_sanitizeRegExp(this.searchValue), 'i') : '';
-				const replaceNeedle = doingSearch ? RegExp(_sanitizeRegExp(this.searchValue), 'gi') : '';
-				let matches = 0;
-
-				for (let i = 0; i < this.niceItems.length; ++i) {
-					// Increase our tab index.
-					++tabIndex;
-
-					// Inject a group label.
-					if (
-						this.niceItems[i].group &&
-						(lastGroup !== this.niceItems[i].group)
-					) {
-						lastGroup = this.niceItems[i].group;
-						out.push({
-							class: 'blobselect-item-group',
-							disabled: false,
-							label: this.niceItems[i].group,
-							richLabel: this.niceItems[i].group,
-							placeholder: false,
-							selected: false,
-							tabIndex: tabIndex,
-							value: false,
-						});
-
-						// Increase our tab index.
-						++tabIndex;
-					}
-
-					// We might need to rich-up the label.
-					let richLabel = this.niceItems[i].label;
-
-					// What classes belong here?
-					let classes = ['blobselect-item'];
-					if (this.niceItems[i].group) {
-						classes.push('has-group');
-					}
-					if (this.niceItems[i].disabled) {
-						classes.push('is-disabled');
-					}
-					if (this.niceItems[i].placeholder) {
-						classes.push('is-placeholder');
-					}
-					if (this.niceItems[i].selected) {
-						classes.push('is-active');
-					}
-					if (doingSearch) {
-						if (needle.test(this.niceItems[i].label)) {
-							classes.push('is-match');
-							richLabel = richLabel.replace(replaceNeedle, '<mark>$&</mark>');
-							++matches;
-						}
-						else {
-							classes.push('is-not-match');
-						}
-					}
-
-					out.push({
-						class: classes.join(' '),
-						disabled: this.niceItems[i].disabled,
-						label: this.niceItems[i].label,
-						richLabel: richLabel,
-						placeholder: this.niceItems[i].placeholder,
-						selected: this.niceItems[i].selected,
-						tabIndex: this.niceItems[i].label,
-						value: this.niceItems[i].value,
-					});
-				}
-
-				// If we're filtering and no matches were found, we need
-				// to bring it all back. Haha.
-				if (doingSearch && !matches) {
-					for (let i = 0; i < out.length; ++i) {
-						out[i].class = out[i].class.replace(' is-not-match', '');
+					for (let i = 0; i < groupLength; ++i) {
+						out[groupKeys[i]].sort(this.sortFunction);
 					}
 				}
 
@@ -1075,82 +1009,228 @@
 			},
 
 			/**
-			 * Items for real select.
+			 * Ungrouped Items
 			 *
-			 * Since none of these <options> are themselves reactive, we
-			 * can gain some performance by dumping a string for use
-			 * with v-html rather than pushing them with a v-for.
-			 *
-			 * @returns {string} HTML.
+			 * @returns {array|bool} Ungrouped items.
 			 */
-			selectItems: function() {
-				let out = '';
-
-				// Keep track of group labels and whatnot.
-				let lastGroup = '';
-
-				for (let i = 0; i < this.niceItems.length; ++i) {
-					// Working in a group.
-					if (
-						this.niceItems[i].group &&
-						(this.niceItems[i].group !== lastGroup)
-					) {
-						// Close out the previous group.
-						if (lastGroup) {
-							out += '</optgroup>';
-						}
-
-						// Start the new group.
-						out += '<optgroup label="' + _escAttr(this.niceItems[i].group) + '">';
-						lastGroup = this.niceItems[i].group;
-					}
-					// Moving to a non-group.
-					else if (lastGroup) {
-						out += '</optgroup>';
-						lastGroup = '';
-					}
-
-					// Build an option for it.
-					let option = '<option value="' + _escAttr(this.niceItems[i].value) + '"';
-					if (this.niceItems[i].disabled) {
-						option += ' disabled';
-					}
-					else if (this.niceItems[i].selected) {
-						option += ' selected';
-					}
-					option += '>' + _escAttr(this.niceItems[i].label) + '</option>';
-
-					// And add it to our output.
-					out += option;
+			ungroupedItems: function() {
+				let items = this.niceItems.filter(function(v) { return ! v.group; });
+				if (! items.length) {
+					return false;
 				}
 
-				// Close any dangling groups.
-				if (lastGroup) {
-					out += '</optgroup>';
+				// Might as well sort while we're here.
+				if (this.sortDirection) {
+					items.sort(this.sortFunction);
 				}
 
-				return out;
+				return items;
 			},
 
 			/**
 			 * Selected Items
 			 *
-			 * @returns {array} Items.
+			 * @returns {array} Selected items.
 			 */
 			selectedItems: function() {
-				let out = [];
+				const values = this.niceValue;
+				const vue = this;
+				let items = this.enabledItems.filter(function(v) {
+					return values.has(v.value);
+				}).map(function(v) {
+					return {
+						label: v.placeholder ? vue.fieldPlaceholder : v.label,
+						value: v.value,
+						class: 'blobselect-selection' + (v.placeholder ? ' is-placeholder' : ''),
+					};
+				});
 
-				for (let i = 0; i < this.niceItems.length; ++i) {
-					if (
-						this.niceItems[i].selected &&
-						!this.niceItems[i].disabled
-					) {
-						out.push({
-							label: this.niceItems[i].placeholder ? this.fieldPlaceholder : this.niceItems[i].label,
-							value: this.niceItems[i].value,
-							class: 'blobselect-selection' + (this.niceItems[i].placeholder ? ' is-placeholder' : ''),
-						});
+				// Might as well sort while we're here.
+				if (this.sortDirection) {
+					items.sort(this.sortFunction);
+				}
+
+				return items;
+			},
+
+			/**
+			 * Has Selections
+			 *
+			 * @returns {bool} True/false.
+			 */
+			hasSelections: function() {
+				return 0 < this.selectedItems.length;
+			},
+
+			/**
+			 * Select HTML
+			 *
+			 * To workaround the performance limitations of v-for, we'll
+			 * just generate the HTML for the <select> field manually.
+			 *
+			 * @returns {string} HTML.
+			 */
+			selectHtml: function() {
+				let out = '';
+				const selected = this.niceValue;
+
+				// Add a placeholder.
+				if (this.placeholder && ! this.multiple && ! this.required) {
+					out += '<option value="' + (this.nicePlaceholderValue) + '">' + _escAttr(this.labelPlaceholder) + '</option>';
+				}
+
+				// Groups?
+				const groups = this.groupedItems;
+				if (false !== groups) {
+					let groupKeys = Object.keys(this.groupedItems);
+					const groupLength = groupKeys.length;
+					if (this.sortDirection) {
+						groupKeys.sort();
+						if ('DESC' === this.sortDirection) {
+							groupKeys.reverse();
+						}
 					}
+
+					for (let i = 0; i < groupLength; ++i) {
+						out += '<optgroup label="' + _escAttr(groupKeys[i]) + '">';
+
+						const itemsLength = groups[groupKeys[i]].length;
+						for (let j = 0; j < itemsLength; ++j) {
+							out += '<option value="' + _escAttr(groups[groupKeys[i]][j].value) + '"';
+							if (groups[groupKeys[i]][j].disabled) {
+								out += ' disabled';
+							}
+							if (selected.has(groups[groupKeys[i]][j].value)) {
+								out += ' selected';
+							}
+							out += '>' + _escAttr(groups[groupKeys[i]][j].label) + '</option>';
+						}
+
+						out += '</optgroup>';
+					}
+				}
+
+				// Ungroups?
+				const ungroups = this.ungroupedItems;
+				if (false !== ungroups) {
+					const itemsLength = ungroups.length;
+					for (let i = 0; i < itemsLength; ++i) {
+						out += '<option value="' + _escAttr(ungroups[i].value) + '"';
+						if (ungroups[i].disabled) {
+							out += ' disabled';
+						}
+						if (selected.has(ungroups[i].value)) {
+							out += ' selected';
+						}
+						out += '>' + _escAttr(ungroups[i].label) + '</option>';
+					}
+				}
+
+				return out;
+			},
+
+			/**
+			 * Items HTML
+			 *
+			 * As with the above, we have to build this shit manually or
+			 * else Vue will explode.
+			 *
+			 * @returns {string} HTML.
+			 */
+			itemsHtml: function() {
+				const selected = this.niceValue;
+				let out = '';
+
+				// Until we can v-html a <template>, we have to include
+				// search field in this computed. Complicates things a
+				// little. Haha.
+				if (this.search) {
+					out += '<div class="blobselect-item-search" type="text" contentEditable tabIndex="0"></div>';
+				}
+
+				let tabIndex = 0;
+
+				// Add a placeholder.
+				if (this.placeholder && ! this.multiple && ! this.required) {
+					++tabIndex;
+
+					let label = this.labelPlaceholder;
+					let value = this.nicePlaceholderValue;
+					let classes = ['blobselect-item', 'is-placeholder'];
+
+					out += '<div class="' + classes.join(' ') + '" tabIndex="' + tabIndex + '" data-blob-item="' + tabIndex + '" data-blob-value="' + _escAttr(JSON.stringify(value)) + '" data-blob-label="' + _escAttr(JSON.stringify(label)) + '">' + _escAttr(label) + '</div>';
+				}
+
+				// Groups?
+				const groups = this.groupedItems;
+				if (false !== groups) {
+					let groupKeys = Object.keys(this.groupedItems);
+					const groupLength = groupKeys.length;
+					if (this.sortDirection) {
+						groupKeys.sort();
+						if ('DESC' === this.sortDirection) {
+							groupKeys.reverse();
+						}
+					}
+
+					for (let i = 0; i < groupLength; ++i) {
+						out += '<div class="blobselect-item-group">' + _escAttr(groupKeys[i]) + '</div>';
+
+						const itemsLength = groups[groupKeys[i]].length;
+						for (let j = 0; j < itemsLength; ++j) {
+							++tabIndex;
+
+							let label = groups[groupKeys[i]][j].label;
+							let value = groups[groupKeys[i]][j].value;
+							let classes = ['blobselect-item', 'has-group'];
+
+							if (groups[groupKeys[i]][j].disabled) {
+								classes.push('is-disabled');
+							}
+
+							if (groups[groupKeys[i]][j].placeholder) {
+								classes.push('is-placeholder');
+							}
+
+							out += '<div class="' + classes.join(' ') + '" tabIndex="' + tabIndex + '"';
+							out += ' data-blob-item="' + tabIndex + '"';
+							out += ' data-blob-value="' + _escAttr(JSON.stringify(value)) + '" data-blob-label="' + _escAttr(JSON.stringify(label)) + '">' + _escAttr(label) + '</div>';
+						}
+					}
+				}
+
+				// Ungroups?
+				const ungroups = this.ungroupedItems;
+				if (false !== ungroups) {
+					const itemsLength = ungroups.length;
+					for (let i = 0; i < itemsLength; ++i) {
+						++tabIndex;
+
+						let label = ungroups[i].label;
+						let value = ungroups[i].value;
+						let classes = ['blobselect-item'];
+
+						if (ungroups[i].disabled) {
+							classes.push('is-disabled');
+						}
+
+						if (ungroups[i].placeholder) {
+							classes.push('is-placeholder');
+						}
+
+						out += '<div class="' + classes.join(' ') + '" tabIndex="' + tabIndex + '"';
+						out += ' data-blob-item="' + tabIndex + '"';
+						out += ' data-blob-value="' + _escAttr(JSON.stringify(value)) + '" data-blob-label="' + _escAttr(JSON.stringify(label)) + '">' + _escAttr(label) + '</div>';
+					}
+				}
+
+				if (tabIndex) {
+					this.minItemKey = 1;
+					this.maxItemKey = tabIndex;
+				}
+				else {
+					this.minItemKey = 0;
+					this.maxItemKey = 0;
 				}
 
 				return out;
@@ -1162,7 +1242,7 @@
 			 * @returns {bool|string} Direction or false.
 			 */
 			sortDirection: function() {
-				if (!this.sort || ('string' !== typeof this.sort)) {
+				if (! this.sort || ('string' !== typeof this.sort)) {
 					return false;
 				}
 
@@ -1209,7 +1289,7 @@
 			 * @returns {string} Class.
 			 */
 			stateClass: function() {
-				if (!this.state || ('closed' === this.state)) {
+				if (! this.state || ('closed' === this.state)) {
 					return 'is-closed';
 				}
 
@@ -1217,26 +1297,114 @@
 			},
 		},
 
+		// Watch.
+		watch: {
+			/**
+			 * Focus Change
+			 *
+			 * Change the owner of the .is-focused class.
+			 *
+			 * @param {int} val Value.
+			 * @returns {void} Nothing.
+			 */
+			focus: function(val) {
+				// Remove existing focus classes.
+				const focused = this.$el.querySelectorAll('.blobselect-item.is-focused');
+				for (let i = 0; i < focused.length; ++i) {
+					focused[i].classList.remove('is-focused');
+				}
+
+				// Focus an item?
+				if (0 < val) {
+					const field = this.$el.querySelector('.blobselect-item[data-blob-item="' + val + '"]');
+					if (null !== field) {
+						field.classList.add('is-focused');
+					}
+				}
+			},
+
+			/**
+			 * Selection Change
+			 *
+			 * Reclass items whenever selection changes are made.
+			 *
+			 * @returns {void} Nothing.
+			 */
+			valueHash: function() {
+				const values = this.niceValue;
+				const valuesLength = values.size;
+
+				// If there are no values, we can move more surgically.
+				if (! valuesLength) {
+					// Strip active class from non-matches.
+					const active = this.$el.querySelectorAll('.blobselect-item.is-active');
+					const activeLength = active.length;
+					if (activeLength) {
+						for (let i = 0; i < activeLength; ++i) {
+							if (
+								active[i].classList.contains('is-disabled') ||
+								! active[i].classList.contains('is-placeholder')
+							) {
+								active[i].classList.remove('is-active');
+							}
+						}
+					}
+
+					// Make sure placeholders are enabled.
+					const placeholders = this.$el.querySelectorAll('.blobselect-item.is-placeholder:not(.is-active):not(.is-disabled)');
+					const placeholdersLength = placeholders.length;
+					for (let i = 0; i < placeholdersLength; ++i) {
+						placeholders[i].classList.add('is-active');
+					}
+
+					return;
+				}
+
+				// Unfortunately we have to loop through everything to
+				// catch our intended values.
+				const items = this.$el.querySelectorAll('.blobselect-item');
+				const itemsLength = items.length;
+				const selected = this.niceValue;
+				let found = false;
+				for (let i = 0; i < itemsLength; ++i) {
+					// Selected!
+					if (
+						(! found || this.multiple) &&
+						! items[i].classList.contains('is-disabled') &&
+						selected.has(_parseFlat(
+							JSON.parse(items[i].getAttribute('data-blob-value')) || false,
+							this.niceValueType
+						))
+					) {
+						if (! items[i].classList.contains('is-active')) {
+							items[i].classList.add('is-active');
+						}
+
+						found = true;
+					}
+					// Shouldn't be selected.
+					else if (items[i].classList.contains('is-active')) {
+						items[i].classList.remove('is-active');
+					}
+				}
+			},
+		},
+
 		template: '<div class="blobselect" v-on:keyup="toggleKeyState($event)" :tabIndex.prop="0" v-on:click.self="toggleState" :class="[ stateClass, { \'is-disabled\' : disabled, \'is-required\' : required, \'is-multiple\' : multiple }]" >\
 			<div class="blobselect-selections" v-if="multiple" v-on:click.self.prevent="toggleState">\
-				<div v-if="selectedItems.length" v-for="item in selectedItems" v-on:click.prevent="toggleSelection(item.value)" :class="item.class">{{ item.label }}</div>\
-				<div v-if="!selectedItems.length && placeholder" class="blobselect-selection is-placeholder" v-on:click.prevent="toggleState">{{ fieldPlaceholder }}</div>\
+				<div v-if="hasSelections" v-for="item in selectedItems" v-on:click.prevent="toggleValueSelection(item.value)" :class="item.class">{{ item.label }}</div>\
+				<div v-if="!hasSelections && placeholder" class="blobselect-selection is-placeholder" v-on:click.prevent="toggleState">{{ fieldPlaceholder }}</div>\
 			</div>\
 			<div class="blobselect-selections" v-else v-on:click.prevent="toggleState">\
-				<div v-if="selectedItems.length" v-for="item in selectedItems" :class="item.class">{{ item.label }}</div>\
-				<div v-if="!selectedItems.length && placeholder" class="blobselect-selection is-placeholder">{{ fieldPlaceholder }}</div>\
+				<div v-if="hasSelections" v-for="item in selectedItems" :class="item.class">{{ item.label }}</div>\
+				<div v-if="!hasSelections && placeholder" class="blobselect-selection is-placeholder">{{ fieldPlaceholder }}</div>\
 			</div>\
-			<select v-on:click.self="toggleState" :multiple="multiple" :disabled="disabled" :required="required" :name="niceName" :id="niceId" v-html="selectItems" v-on:input="$emit(\'input\', $event.target.value)"></select>\
+			<select v-on:click.self="toggleState" :multiple="multiple" :disabled="disabled" :required="required" :name="niceName" :id="niceId" v-html="selectHtml" v-on:input="$emit(\'input\', $event.target.value)"></select>\
 			</select>\
 			<div class="blobselect-button" v-on:click.prevent="toggleState"></div>\
-			<div class="blobselect-items">\
-				<div v-if="search" class="blobselect-item-search" type="text" contentEditable v-on:input="toggleFilter($event.target.textContent)" v-on:click="resetFocus" tabIndex="0"></div>\
-				<div v-for="(item, index) in blobItems" :class="[item.class, { \'is-focused\' : index === focus }]" :tabIndex.prop="item.tabIndex" v-on:click.prevent="toggleSelection(item.value)" v-html="item.richLabel"></div>\
-			</div>\
+			<div class="blobselect-items" v-on:click="itemsClick($event)" v-html="itemsHtml"></div>\
 		</div>',
 	};
-
-	// ----------------------------------------------------------------- end component
 
 
 
@@ -1266,7 +1434,7 @@
 	 */
 	const _parseNumber = function(value) {
 		// Real simple stuff.
-		if (!value || ('boolean' === typeof value)) {
+		if (! value || ('boolean' === typeof value)) {
 			return value ? 1 : 0;
 		}
 
@@ -1289,7 +1457,7 @@
 	 */
 	const _parseString = function(value) {
 		// Real simple stuff.
-		if (!value || ('boolean' === typeof value)) {
+		if (! value || ('boolean' === typeof value)) {
 			return value ? 'true' : '';
 		}
 
@@ -1304,7 +1472,48 @@
 		return value;
 	};
 
-	// ----------------------------------------------------------------- end values
+	/**
+	 * Simple Checksum
+	 *
+	 * The original value of each field is stored so that its change
+	 * status can be detected.
+	 *
+	 * To make comparisons easier, and to cut down on memory waste,
+	 * values are stored as a very simple checksum.
+	 *
+	 * @param {mixed} value Value.
+	 * @returns {string} Hash.
+	 */
+	const _checksum = function(value) {
+		// We need a string. For objects, JSON will suffice.
+		if ('object' === typeof value) {
+			try {
+				value = JSON.stringify(value);
+			} catch (Ex) {
+				return 0;
+			}
+		}
+		// For everything else, just try to cast it.
+		else {
+			try {
+				value = value + '';
+			} catch (Ex) {
+				return 0;
+			}
+		}
+
+		// Declare our variables.
+		let hash = 0;
+		const strlen = value.length;
+
+		for (let i = 0; i < strlen; ++i) {
+			let c = value.charCodeAt(i);
+			hash = ((hash << 5) - hash) + c;
+			hash = hash & hash; // Convert to 32-bit integer.
+		}
+
+		return hash;
+	};
 
 
 
@@ -1324,6 +1533,10 @@
 		if (a.placeholder === b.placeholder) {
 			let a_key = a.label.toLowerCase();
 			let b_key = b.label.toLowerCase();
+
+			if (a_key === b_key) {
+				return 0;
+			}
 
 			return a_key < b_key ? -1 : 1;
 		}
@@ -1345,6 +1558,10 @@
 			let a_key = a.label.toLowerCase();
 			let b_key = b.label.toLowerCase();
 
+			if (a_key === b_key) {
+				return 0;
+			}
+
 			return a_key > b_key ? -1 : 1;
 		}
 
@@ -1364,6 +1581,10 @@
 		if (a.placeholder === b.placeholder) {
 			let a_key = Number(a.label.replace(/[^\d.]/g, '')) || 0;
 			let b_key = Number(b.label.replace(/[^\d.]/g, '')) || 0;
+
+			if (a_key === b_key) {
+				return 0;
+			}
 
 			return a_key < b_key ? -1 : 1;
 		}
@@ -1385,14 +1606,16 @@
 			let a_key = Number(a.label.replace(/[^\d.]/g, '')) || 0;
 			let b_key = Number(b.label.replace(/[^\d.]/g, '')) || 0;
 
+			if (a_key === b_key) {
+				return 0;
+			}
+
 			return a_key > b_key ? -1 : 1;
 		}
 
 		// Placeholders always go up.
 		return a.placeholder ? -1 : 1;
 	};
-
-	// ----------------------------------------------------------------- sorting
 
 
 
@@ -1440,7 +1663,7 @@
 	const _closeOthers = function(el) {
 		const others = document.querySelectorAll('.blobselect.is-open');
 		for (let i = 0; i < others.length; ++i) {
-			if (!el || el !== others[i]) {
+			if (! el || el !== others[i]) {
 				if ('undefined' !== typeof others[i].__vue__) {
 					others[i].__vue__.toggleState('close');
 				}
