@@ -179,6 +179,10 @@
 				type: String,
 				default: 'string',
 			},
+			autocomplete: {
+				type: String,
+				default: 'off',
+			},
 		},
 
 		// Methods.
@@ -1407,7 +1411,7 @@
 				<div v-if="hasSelections" v-for="item in selectedItems" :class="item.class">{{ item.label }}</div>\
 				<div v-if="!hasSelections && placeholder" class="blobselect-selection is-placeholder">{{ fieldPlaceholder }}</div>\
 			</div>\
-			<select v-on:click.self="toggleState" :multiple="multiple" :disabled="disabled" :required="required" :name="niceName" :id="niceId" v-html="selectHtml" v-on:input="$emit(\'input\', $event.target.value)"></select>\
+			<select v-on:click.self="toggleState" :autocomplete="autocomplete" :multiple="multiple" :disabled="disabled" :required="required" :name="niceName" :id="niceId" v-html="selectHtml" v-on:input="$emit(\'input\', $event.target.value)"></select>\
 			</select>\
 			<div class="blobselect-button" v-on:click.prevent="toggleState"></div>\
 			<div class="blobselect-items" v-on:click="itemsClick($event)" v-html="itemsHtml"></div>\
